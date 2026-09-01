@@ -1,0 +1,117 @@
+name: 编译怠速记录
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app.zip'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: 1. 读取仓库
+        uses: actions/checkout@v4
+
+      - name: 2. 检查 app.zip
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f "app.zip" ]; then
+            echo "❌ 仓库根目录没有 app.zip"
+            echo "请把我给你的 app.zip 原样上传到仓库根目录，不要解压。"
+            exit 1
+          fi
+          echo "✅ 找到 app.zip"
+          ls -lh app.zip
+
+      - name: 3. 解压源码
+        shell: bash
+        run: |
+          set -e
+          rm -rf src
+          mkdir -p src
+          unzip -q app.zip -d src
+          if [ ! -f "src/project.yml" ]; then
+            echo "❌ app.zip 根目录没有 project.yml"
+            echo "这个 app.zip 结构不正确。"
+            find src -maxdepth 3 -type f | head -80
+            exit 1
+          fi
+          echo "✅ 源码结构正常"
+
+      - name: 4. 安装 XcodeGen
+        shell: bash
+        run: |
+          set -e
+          brew install xcodegen
+          xcodegen --version
+
+      - name: 5. 生成 Xcode 工程
+        working-directory: src
+        shell: bash
+        run: |
+          set -e
+          xcodegen generate
+          test -d CarIdle.xcodeproj
+          echo "✅ Xcode 工程生成成功"
+
+      - name: 6. 编译 iPhone Release
+        working-directory: src
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf build
+          xcodebuild \
+            -project CarIdle.xcodeproj \
+            -target CarIdle \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee ../xcodebuild.log
+
+      - name: 7. 打包 IPA
+        shell: bash
+        run: |
+          set -e
+          APP_PATH="src/build/Build/Products/Release-iphoneos/CarIdle.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ 没找到编译后的 CarIdle.app"
+            find src/build -maxdepth 6 -name '*.app' -print || true
+            exit 1
+          fi
+
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")
+          echo "✅ 怠速记录 V${VERSION} build ${BUILD}"
+
+          rm -rf Payload output
+          mkdir -p Payload output
+          cp -R "$APP_PATH" Payload/
+          zip -qry "output/怠速记录-V${VERSION}.ipa" Payload
+          cp "output/怠速记录-V${VERSION}.ipa" "output/怠速记录.ipa"
+          ls -lh output
+
+      - name: 8. 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: 怠速记录-IPA
+          path: output/*.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 9. 编译失败日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 编译失败日志
+          path: xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
+
