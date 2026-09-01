@@ -22,7 +22,7 @@ jobs:
           set -e
           if [ ! -f "app.zip" ]; then
             echo "❌ 仓库根目录没有 app.zip"
-            echo "请把我给你的 app.zip 原样上传到仓库根目录，不要解压。"
+            echo "请把 app.zip 原样上传到仓库根目录，不要解压。"
             exit 1
           fi
           echo "✅ 找到 app.zip"
@@ -37,7 +37,6 @@ jobs:
           unzip -q app.zip -d src
           if [ ! -f "src/project.yml" ]; then
             echo "❌ app.zip 根目录没有 project.yml"
-            echo "这个 app.zip 结构不正确。"
             find src -maxdepth 3 -type f | head -80
             exit 1
           fi
@@ -65,12 +64,14 @@ jobs:
         run: |
           set -o pipefail
           rm -rf build
+          mkdir -p build/Release-iphoneos
+
           xcodebuild \
             -project CarIdle.xcodeproj \
             -target CarIdle \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build \
+            CONFIGURATION_BUILD_DIR="$PWD/build/Release-iphoneos" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -80,7 +81,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          APP_PATH="src/build/Build/Products/Release-iphoneos/CarIdle.app"
+          APP_PATH="src/build/Release-iphoneos/CarIdle.app"
+
           if [ ! -d "$APP_PATH" ]; then
             echo "❌ 没找到编译后的 CarIdle.app"
             find src/build -maxdepth 6 -name '*.app' -print || true
@@ -89,13 +91,17 @@ jobs:
 
           VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")
+
           echo "✅ 怠速记录 V${VERSION} build ${BUILD}"
 
           rm -rf Payload output
           mkdir -p Payload output
+
           cp -R "$APP_PATH" Payload/
+
           zip -qry "output/怠速记录-V${VERSION}.ipa" Payload
           cp "output/怠速记录-V${VERSION}.ipa" "output/怠速记录.ipa"
+
           ls -lh output
 
       - name: 8. 上传 IPA
@@ -114,4 +120,3 @@ jobs:
           path: xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
-
