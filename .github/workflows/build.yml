@@ -20,13 +20,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          test -f app.zip || {
+
+          if [ ! -f "app.zip" ]; then
             echo "❌ 仓库根目录没有 app.zip"
             exit 1
-          }
+          fi
 
+          echo "✅ 找到 app.zip"
           unzip -tq app.zip >/dev/null
-          echo "✅ app.zip 正常"
 
       - name: 3. 解压源码
         shell: bash
@@ -35,26 +36,26 @@ jobs:
 
           rm -rf src
           mkdir -p src
+
           unzip -q app.zip -d src
 
-          test -f src/project.yml || {
+          if [ ! -f "src/project.yml" ]; then
             echo "❌ app.zip 根目录没有 project.yml"
+            find src -maxdepth 3 -type f | head -80
             exit 1
-          }
+          fi
 
-          echo "✅ 源码解压完成"
+          echo "✅ 源码结构正常"
 
-      - name: 4. 安装 XcodeGen 和 ldid
+      - name: 4. 安装 XcodeGen
         shell: bash
         run: |
           set -e
 
           brew install xcodegen
-          brew install ldid
-
           xcodegen --version
 
-          echo "✅ XcodeGen 和 ldid 安装完成"
+          echo "✅ XcodeGen 安装完成"
 
       - name: 5. 生成 Xcode 工程
         working-directory: src
@@ -64,10 +65,10 @@ jobs:
 
           xcodegen generate
 
-          test -d CarIdle.xcodeproj || {
-            echo "❌ CarIdle.xcodeproj 生成失败"
+          if [ ! -d "CarIdle.xcodeproj" ]; then
+            echo "❌ Xcode 工程生成失败"
             exit 1
-          }
+          fi
 
           echo "✅ Xcode 工程生成成功"
 
@@ -91,7 +92,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build | tee ../xcodebuild.log
 
-      - name: 7. 写入 TrollStore 权限
+      - name: 7. 检查 App 和 Widget
         shell: bash
         run: |
           set -e
@@ -100,58 +101,19 @@ jobs:
           WIDGET="$APP/PlugIns/CarIdleWidget.appex"
 
           if [ ! -d "$APP" ]; then
-            echo "❌ 找不到 CarIdle.app"
+            echo "❌ 没找到 CarIdle.app"
             exit 1
           fi
 
-          if [ ! -d "$WIDGET" ]; then
-            echo "❌ 找不到 CarIdleWidget.appex"
-            echo "当前 App 内容："
+          echo "✅ 主 App 编译成功"
+
+          if [ -d "$WIDGET" ]; then
+            echo "✅ 找到中号小组件 CarIdleWidget.appex"
+          else
+            echo "❌ 没找到 CarIdleWidget.appex"
             find "$APP" -maxdepth 3 -print
             exit 1
           fi
-
-          APP_EXE=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' \
-            "$APP/Info.plist"
-          )
-
-          WIDGET_EXE=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' \
-            "$WIDGET/Info.plist"
-          )
-
-          echo "=============================="
-          echo "给 Widget 写入 App Group 权限"
-          echo "=============================="
-
-          ldid \
-            -Ssrc/CarIdleWidget/CarIdleWidget.entitlements \
-            "$WIDGET/$WIDGET_EXE"
-
-          echo "=============================="
-          echo "给主 App 写入 App Group 权限"
-          echo "=============================="
-
-          ldid \
-            -Ssrc/CarIdle/CarIdle.entitlements \
-            "$APP/$APP_EXE"
-
-          echo "=============================="
-          echo "Widget 最终权限"
-          echo "=============================="
-
-          ldid -e "$WIDGET/$WIDGET_EXE"
-
-          echo "=============================="
-          echo "主 App 最终权限"
-          echo "=============================="
-
-          ldid -e "$APP/$APP_EXE"
-
-          echo "✅ TrollStore 权限写入完成"
 
       - name: 8. 打包 IPA
         shell: bash
@@ -172,10 +134,10 @@ jobs:
             "$APP_PATH/Info.plist"
           )
 
-          echo "=============================="
+          echo "============================"
           echo "怠速记录 V${VERSION}"
           echo "Build ${BUILD}"
-          echo "=============================="
+          echo "============================"
 
           rm -rf Payload
           rm -rf output
@@ -194,7 +156,6 @@ jobs:
             "output/怠速记录.ipa"
 
           echo "✅ IPA 打包完成"
-
           ls -lh output
 
       - name: 9. 上传 IPA
@@ -205,7 +166,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: 10. 编译失败日志
+      - name: 10. 上传编译失败日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
