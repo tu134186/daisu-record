@@ -26,8 +26,10 @@ jobs:
             exit 1
           fi
 
-          echo "✅ 找到 app.zip"
           unzip -tq app.zip >/dev/null
+
+          echo "✅ 找到 app.zip"
+          echo "✅ ZIP 文件完整"
 
       - name: 3. 解压源码
         shell: bash
@@ -41,6 +43,7 @@ jobs:
 
           if [ ! -f "src/project.yml" ]; then
             echo "❌ app.zip 根目录没有 project.yml"
+            echo "===== ZIP 内文件 ====="
             find src -maxdepth 3 -type f | head -80
             exit 1
           fi
@@ -66,7 +69,7 @@ jobs:
           xcodegen generate
 
           if [ ! -d "CarIdle.xcodeproj" ]; then
-            echo "❌ Xcode 工程生成失败"
+            echo "❌ CarIdle.xcodeproj 生成失败"
             exit 1
           fi
 
@@ -107,13 +110,15 @@ jobs:
 
           echo "✅ 主 App 编译成功"
 
-          if [ -d "$WIDGET" ]; then
-            echo "✅ 找到中号小组件 CarIdleWidget.appex"
-          else
+          if [ ! -d "$WIDGET" ]; then
             echo "❌ 没找到 CarIdleWidget.appex"
+            echo "===== CarIdle.app 内部结构 ====="
             find "$APP" -maxdepth 3 -print
             exit 1
           fi
+
+          echo "✅ 找到 CarIdleWidget.appex"
+          echo "✅ 主 App 与 Widget 均存在"
 
       - name: 8. 打包 IPA
         shell: bash
@@ -156,9 +161,97 @@ jobs:
             "output/怠速记录.ipa"
 
           echo "✅ IPA 打包完成"
+          echo "版本：V${VERSION}"
+          echo "Build：${BUILD}"
+
           ls -lh output
 
-      - name: 9. 上传 IPA
+      - name: 9. 审计最终 IPA 内的 Widget 版本
+        shell: bash
+        run: |
+          set -e
+
+          IPA="$(ls output/怠速记录-V*.ipa | head -1)"
+
+          echo "============================"
+          echo "开始检查最终 IPA"
+          echo "============================"
+
+          bash src/tools/check-built-ipa.sh \
+            "$IPA" \
+            2.2.18 \
+            48
+
+          TMP="$(mktemp -d)"
+
+          unzip -q "$IPA" -d "$TMP"
+
+          APPEX="$(
+            find "$TMP/Payload" \
+            -path '*/PlugIns/CarIdleWidget.appex' \
+            -type d \
+            | head -1
+          )"
+
+          if [ -z "$APPEX" ]; then
+            echo "❌ 最终 IPA 内没有 CarIdleWidget.appex"
+            rm -rf "$TMP"
+            exit 1
+          fi
+
+          echo ""
+          echo "===== 最终 Widget Info.plist ====="
+
+          echo -n "Bundle ID："
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleIdentifier' \
+            "$APPEX/Info.plist"
+
+          echo -n "Version："
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$APPEX/Info.plist"
+
+          echo -n "Build："
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleVersion' \
+            "$APPEX/Info.plist"
+
+          echo ""
+          echo "===== 检查 Widget 可执行文件 ====="
+
+          if strings "$APPEX/CarIdleWidget" \
+            | grep -E 'WIDGET V2\.2\.18|BUILD 48'; then
+
+            echo "✅ 找到 V2.2.18 / Build 48 标记"
+
+          else
+
+            echo "❌ 最终 Widget 可执行文件里"
+            echo "❌ 找不到 V2.2.18 / Build 48 标记"
+            echo "❌ 禁止发布这个 IPA"
+
+            rm -rf "$TMP"
+            exit 1
+
+          fi
+
+          echo ""
+          echo "===== Widget SHA256 ====="
+
+          shasum -a 256 \
+            "$APPEX/CarIdleWidget"
+
+          rm -rf "$TMP"
+
+          echo ""
+          echo "======================================"
+          echo "✅ 最终 IPA Widget 审计通过"
+          echo "✅ Widget = V2.2.18"
+          echo "✅ Build = 48"
+          echo "======================================"
+
+      - name: 10. 上传 IPA
         uses: actions/upload-artifact@v4
         with:
           name: 怠速记录-IPA
@@ -166,7 +259,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: 10. 上传编译失败日志
+      - name: 11. 上传编译失败日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
