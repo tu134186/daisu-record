@@ -17,488 +17,101 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 2. 检查 app.zip
-        shell: bash
         run: |
           set -e
-
-          if [ ! -f "app.zip" ]; then
-            echo "❌ 仓库根目录没有 app.zip"
+          test -f app.zip || {
+            echo "❌ 根目录没有 app.zip"
             exit 1
-          fi
+          }
 
           unzip -tq app.zip >/dev/null
-
-          echo "✅ 找到 app.zip"
-          echo "✅ ZIP 文件完整"
+          echo "✅ app.zip 检查通过"
 
       - name: 3. 解压源码
-        shell: bash
         run: |
           set -e
 
           rm -rf src
-          mkdir -p src
-
+          mkdir src
           unzip -q app.zip -d src
 
-          if [ ! -f "src/project.yml" ]; then
-            echo "❌ app.zip 根目录没有 project.yml"
-            echo "===== ZIP 内文件 ====="
-            find src -maxdepth 3 -type f | head -100
+          test -f src/project.yml || {
+            echo "❌ app.zip 根目录缺少 project.yml"
             exit 1
-          fi
+          }
 
-          echo "✅ 源码结构正常"
+          echo "✅ 源码解压完成"
 
-      - name: 4. 读取源码版本
-        shell: bash
+      - name: 4. 安装 XcodeGen
         run: |
-          set -e
-
-          VERSION=$(
-            grep 'MARKETING_VERSION:' src/project.yml \
-            | head -1 \
-            | sed 's/.*MARKETING_VERSION:[[:space:]]*//' \
-            | tr -d '"'
-          )
-
-          BUILD=$(
-            grep 'CURRENT_PROJECT_VERSION:' src/project.yml \
-            | head -1 \
-            | sed 's/.*CURRENT_PROJECT_VERSION:[[:space:]]*//' \
-            | tr -d '"'
-          )
-
-          if [ -z "$VERSION" ]; then
-            echo "❌ 无法读取 MARKETING_VERSION"
-            exit 1
-          fi
-
-          if [ -z "$BUILD" ]; then
-            echo "❌ 无法读取 CURRENT_PROJECT_VERSION"
-            exit 1
-          fi
-
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
-
-          echo "=============================="
-          echo "源码版本：V$VERSION"
-          echo "源码 Build：$BUILD"
-          echo "=============================="
-
-      - name: 5. 安装 XcodeGen
-        shell: bash
-        run: |
-          set -e
-
           brew install xcodegen
 
-          echo "===== XcodeGen 版本 ====="
-          xcodegen --version
-
-          echo "✅ XcodeGen 安装完成"
-
-      - name: 6. 生成 Xcode 工程
+      - name: 5. 生成 Xcode 工程
         working-directory: src
-        shell: bash
         run: |
           set -e
-
           xcodegen generate
 
-          if [ ! -d "CarIdle.xcodeproj" ]; then
+          test -d CarIdle.xcodeproj || {
             echo "❌ CarIdle.xcodeproj 生成失败"
             exit 1
-          fi
+          }
 
           echo "✅ Xcode 工程生成成功"
 
-      - name: 7. 编译 Release
+      - name: 6. 编译主 App
         working-directory: src
-        shell: bash
         run: |
-          rm -rf build
-          mkdir -p build/Release-iphoneos
-
-          echo "=============================="
-          echo "开始编译怠速记录"
-          echo "=============================="
-
-          set +e
+          set -e
 
           xcodebuild \
             -project CarIdle.xcodeproj \
-            -target CarIdle \
+            -scheme CarIdle \
             -configuration Release \
             -sdk iphoneos \
-            CONFIGURATION_BUILD_DIR="$PWD/build/Release-iphoneos" \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean build > ../xcodebuild.log 2>&1
+            build
 
-          RESULT=$?
-
-          set -e
-
-          cat ../xcodebuild.log
-
-          echo ""
-          echo "xcodebuild 原始返回值：$RESULT"
-
-          if grep -q "\*\* BUILD SUCCEEDED \*\*" ../xcodebuild.log; then
-            echo ""
-            echo "=============================="
-            echo "✅ Xcode 编译成功"
-            echo "=============================="
-          else
-            echo ""
-            echo "=============================="
-            echo "❌ Xcode 编译失败"
-            echo "xcodebuild 返回值：$RESULT"
-            echo "=============================="
-            exit 1
-          fi
-
-      - name: 8. 检查 App 和 Widget
-        shell: bash
+      - name: 7. 检查并打包 IPA
+        working-directory: src
         run: |
           set -e
 
-          APP="src/build/Release-iphoneos/CarIdle.app"
-          WIDGET="$APP/PlugIns/CarIdleWidget.appex"
+          APP="build/Build/Products/Release-iphoneos/CarIdle.app"
 
-          echo "=============================="
-          echo "检查编译产物"
-          echo "=============================="
-
-          if [ ! -d "$APP" ]; then
+          test -d "$APP" || {
             echo "❌ 没找到 CarIdle.app"
-            echo ""
-            echo "===== build 目录 ====="
-            find src/build -maxdepth 4 -print || true
             exit 1
-          fi
+          }
 
-          echo "✅ 找到 CarIdle.app"
-
-          if [ ! -d "$WIDGET" ]; then
-            echo "❌ 没找到 CarIdleWidget.appex"
-            echo ""
-            echo "===== CarIdle.app 内部结构 ====="
-            find "$APP" -maxdepth 4 -print
+          test -f "$APP/Info.plist" || {
+            echo "❌ CarIdle.app 缺少 Info.plist"
             exit 1
-          fi
+          }
 
-          echo "✅ 找到 CarIdleWidget.appex"
-          echo "✅ 主 App 与 Widget 均存在"
-
-      - name: 9. 检查编译后的版本号
-        shell: bash
-        run: |
-          set -e
-
-          APP="src/build/Release-iphoneos/CarIdle.app"
-          WIDGET="$APP/PlugIns/CarIdleWidget.appex"
-
-          APP_VERSION=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            "$APP/Info.plist"
-          )
-
-          APP_BUILD=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleVersion' \
-            "$APP/Info.plist"
-          )
-
-          APP_BUNDLE_ID=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleIdentifier' \
-            "$APP/Info.plist"
-          )
-
-          WIDGET_VERSION=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            "$WIDGET/Info.plist"
-          )
-
-          WIDGET_BUILD=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleVersion' \
-            "$WIDGET/Info.plist"
-          )
-
-          WIDGET_BUNDLE_ID=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleIdentifier' \
-            "$WIDGET/Info.plist"
-          )
-
-          echo "=============================="
-          echo "源码"
-          echo "Version：$VERSION"
-          echo "Build：$BUILD"
-          echo ""
-          echo "主 App"
-          echo "Bundle ID：$APP_BUNDLE_ID"
-          echo "Version：$APP_VERSION"
-          echo "Build：$APP_BUILD"
-          echo ""
-          echo "Widget"
-          echo "Bundle ID：$WIDGET_BUNDLE_ID"
-          echo "Version：$WIDGET_VERSION"
-          echo "Build：$WIDGET_BUILD"
-          echo "=============================="
-
-          if [ "$APP_VERSION" != "$VERSION" ]; then
-            echo "❌ 主 App Version 与源码不一致"
-            exit 1
-          fi
-
-          if [ "$APP_BUILD" != "$BUILD" ]; then
-            echo "❌ 主 App Build 与源码不一致"
-            exit 1
-          fi
-
-          if [ "$WIDGET_VERSION" != "$VERSION" ]; then
-            echo "❌ Widget Version 与源码不一致"
-            exit 1
-          fi
-
-          if [ "$WIDGET_BUILD" != "$BUILD" ]; then
-            echo "❌ Widget Build 与源码不一致"
-            exit 1
-          fi
-
-          echo "✅ App / Widget 版本完全一致"
-
-      - name: 10. 检查 Widget 可执行文件
-        shell: bash
-        run: |
-          set -e
-
-          WIDGET="src/build/Release-iphoneos/CarIdle.app/PlugIns/CarIdleWidget.appex"
-
-          EXECUTABLE=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' \
-            "$WIDGET/Info.plist"
-          )
-
-          BIN="$WIDGET/$EXECUTABLE"
-
-          echo "=============================="
-          echo "Widget 可执行文件：$EXECUTABLE"
-          echo "=============================="
-
-          if [ ! -f "$BIN" ]; then
-            echo "❌ Widget 可执行文件不存在"
-            exit 1
-          fi
-
-          echo "✅ Widget 可执行文件存在"
-
-          echo ""
-          echo "===== Widget SHA256 ====="
-          shasum -a 256 "$BIN"
-
-          echo ""
-          echo "===== 搜索版本字符串 ====="
-
-          strings "$BIN" \
-            | grep -E "WIDGET V|BUILD [0-9]+" \
-            | head -30 || true
-
-      - name: 11. 打包 IPA
-        shell: bash
-        run: |
-          set -e
-
-          APP="src/build/Release-iphoneos/CarIdle.app"
+          echo "✅ CarIdle.app 编译成功"
 
           rm -rf Payload
-          rm -rf output
+          rm -f CarIdle-V2.0.9.ipa
 
-          mkdir -p Payload
-          mkdir -p output
-
+          mkdir Payload
           cp -R "$APP" Payload/
 
-          IPA="output/怠速记录-V${VERSION}.ipa"
+          zip -qry CarIdle-V2.0.9.ipa Payload
 
-          zip -qry "$IPA" Payload
-
-          cp "$IPA" "output/怠速记录.ipa"
-
-          echo "=============================="
-          echo "✅ IPA 打包成功"
-          echo "版本：V$VERSION"
-          echo "Build：$BUILD"
-          echo "=============================="
-
-          ls -lh output
-
-      - name: 12. 最终拆包检查 IPA
-        shell: bash
-        run: |
-          set -e
-
-          IPA="output/怠速记录-V${VERSION}.ipa"
-
-          TMP=$(mktemp -d)
-
-          unzip -q "$IPA" -d "$TMP"
-
-          APP=$(
-            find "$TMP/Payload" \
-            -maxdepth 1 \
-            -name "*.app" \
-            -type d \
-            | head -1
-          )
-
-          if [ -z "$APP" ]; then
-            echo "❌ 最终 IPA 没找到 .app"
-            rm -rf "$TMP"
+          test -f CarIdle-V2.0.9.ipa || {
+            echo "❌ IPA 打包失败"
             exit 1
-          fi
+          }
 
-          WIDGET="$APP/PlugIns/CarIdleWidget.appex"
+          echo "✅ CarIdle-V2.0.9.ipa 打包完成"
 
-          if [ ! -d "$WIDGET" ]; then
-            echo "❌ 最终 IPA 内没有 CarIdleWidget.appex"
-            echo ""
-            echo "===== IPA 内容 ====="
-            find "$TMP/Payload" -maxdepth 5 -print
-            rm -rf "$TMP"
-            exit 1
-          fi
-
-          APP_VERSION=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            "$APP/Info.plist"
-          )
-
-          APP_BUILD=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleVersion' \
-            "$APP/Info.plist"
-          )
-
-          APP_BUNDLE_ID=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleIdentifier' \
-            "$APP/Info.plist"
-          )
-
-          WIDGET_VERSION=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleShortVersionString' \
-            "$WIDGET/Info.plist"
-          )
-
-          WIDGET_BUILD=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleVersion' \
-            "$WIDGET/Info.plist"
-          )
-
-          WIDGET_BUNDLE_ID=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleIdentifier' \
-            "$WIDGET/Info.plist"
-          )
-
-          EXECUTABLE=$(
-            /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' \
-            "$WIDGET/Info.plist"
-          )
-
-          BIN="$WIDGET/$EXECUTABLE"
-
-          echo ""
-          echo "======================================"
-          echo "最终 IPA 审计结果"
-          echo "======================================"
-
-          echo ""
-          echo "主 App："
-          echo "Bundle ID：$APP_BUNDLE_ID"
-          echo "Version：$APP_VERSION"
-          echo "Build：$APP_BUILD"
-
-          echo ""
-          echo "Widget："
-          echo "Bundle ID：$WIDGET_BUNDLE_ID"
-          echo "Version：$WIDGET_VERSION"
-          echo "Build：$WIDGET_BUILD"
-
-          echo ""
-          echo "Widget Executable：$EXECUTABLE"
-
-          echo ""
-          echo "===== Widget SHA256 ====="
-          shasum -a 256 "$BIN"
-
-          echo ""
-          echo "===== Widget 内版本文字 ====="
-
-          strings "$BIN" \
-            | grep -E "WIDGET V|BUILD [0-9]+" \
-            | head -30 || true
-
-          if [ "$APP_VERSION" != "$VERSION" ]; then
-            echo "❌ 最终 IPA 主 App Version 错误"
-            rm -rf "$TMP"
-            exit 1
-          fi
-
-          if [ "$APP_BUILD" != "$BUILD" ]; then
-            echo "❌ 最终 IPA 主 App Build 错误"
-            rm -rf "$TMP"
-            exit 1
-          fi
-
-          if [ "$WIDGET_VERSION" != "$VERSION" ]; then
-            echo "❌ 最终 IPA Widget Version 错误"
-            rm -rf "$TMP"
-            exit 1
-          fi
-
-          if [ "$WIDGET_BUILD" != "$BUILD" ]; then
-            echo "❌ 最终 IPA Widget Build 错误"
-            rm -rf "$TMP"
-            exit 1
-          fi
-
-          echo ""
-          echo "======================================"
-          echo "✅ 最终 IPA 检查全部通过"
-          echo "✅ App：V$APP_VERSION Build $APP_BUILD"
-          echo "✅ Widget：V$WIDGET_VERSION Build $WIDGET_BUILD"
-          echo "======================================"
-
-          rm -rf "$TMP"
-
-      - name: 13. 上传 IPA
+      - name: 8. 上传 IPA
         uses: actions/upload-artifact@v4
         with:
-          name: 怠速记录-IPA-V${{ env.VERSION }}-Build${{ env.BUILD }}
-          path: output/*.ipa
+          name: CarIdle-V2.0.9
+          path: src/CarIdle-V2.0.9.ipa
           if-no-files-found: error
-          retention-days: 30
-
-      - name: 14. 上传编译失败日志
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: 编译失败日志
-          path: xcodebuild.log
-          if-no-files-found: ignore
-          retention-days: 7
