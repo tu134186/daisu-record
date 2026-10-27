@@ -31,12 +31,13 @@ jobs:
             unzip -q app.zip -d src
           fi
           test -f src/CarIdleWidget/IdleWidget.swift
-          if ! grep -q 'MARKETING_VERSION: "2.3.10"' src/project.yml; then
+          if ! grep -q 'MARKETING_VERSION: "2.3.11"' src/project.yml; then
             PROJECT_DIR=src python3 scripts/apply-live-activity-fix.py
+            PROJECT_DIR=src python3 scripts/refresh-extension.py
           fi
           mkdir -p src/.github/workflows src/scripts _delivery
           cp .github/workflows/build.yml src/.github/workflows/build.yml
-          cp scripts/apply-live-activity-fix.py src/scripts/
+          cp scripts/*.py src/scripts/
       - name: Check source and package exact source
         run: |
           python3 - <<'PY'
@@ -45,13 +46,15 @@ jobs:
           root=Path('src')
           for p in root.rglob('*.plist'):plistlib.loads(p.read_bytes())
           project=(root/'project.yml').read_text()
-          assert project.count('MARKETING_VERSION: "2.3.10"')==2
-          assert project.count('CURRENT_PROJECT_VERSION: "45"')==2
+          assert project.count('MARKETING_VERSION: "2.3.11"')==2
+          assert project.count('CURRENT_PROJECT_VERSION: "46"')==2
           text=(root/'CarIdleWidget/IdleWidget.swift').read_text()
           assert 'pause.fill' not in text and 'pauseButton' not in text
           compact=text.split('} compactTrailing: {',1)[1].split('} minimal:',1)[0]
-          assert '.infinity' not in compact and '.frame(width:' in compact
-          archive=Path('_delivery/2.3.10-CarIdle-Build45-source.zip')
+          assert '.infinity' not in compact and '.overlay(alignment: .trailing)' in compact
+          assert 'com.trollbox.caridle.liveactivity' in project
+          assert '怠速记录 ·46' in text
+          archive=Path('_delivery/2.3.11-CarIdle-Build46-source.zip')
           with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
               for p in sorted(root.rglob('*')):
                   if p.is_file() and not any(x in p.relative_to(root).parts for x in ('build','.git','Payload')):z.write(p,p.relative_to(root))
@@ -75,16 +78,16 @@ jobs:
           widgets=list((app/'PlugIns').glob('*.appex'));assert len(widgets)==1,widgets
           for bundle in [app,*widgets]:
               d=plistlib.loads((bundle/'Info.plist').read_bytes())
-              assert d['CFBundleShortVersionString']=='2.3.10',d
-              assert d['CFBundleVersion']=='45',d
+              assert d['CFBundleShortVersionString']=='2.3.11',d
+              assert d['CFBundleVersion']=='46',d
               assert (bundle/d['CFBundleExecutable']).is_file()
           payload=Path('_delivery/Payload');payload.mkdir()
           shutil.copytree(app,payload/'CarIdle.app')
           dest=Path('_delivery/Payload/CarIdle.app')
           for appex in (dest/'PlugIns').glob('*.appex'):subprocess.run(['codesign','--force','--sign','-',str(appex)],check=True)
           subprocess.run(['codesign','--force','--sign','-',str(dest)],check=True)
-          subprocess.run(['zip','-qry','2.3.10-CarIdle-Build45.ipa','Payload'],cwd='_delivery',check=True)
-          with zipfile.ZipFile('_delivery/2.3.10-CarIdle-Build45.ipa') as z:
+          subprocess.run(['zip','-qry','2.3.11-CarIdle-Build46.ipa','Payload'],cwd='_delivery',check=True)
+          with zipfile.ZipFile('_delivery/2.3.11-CarIdle-Build46.ipa') as z:
               assert z.testzip() is None
               assert 'Payload/CarIdle.app/PlugIns/CarIdleWidget.appex/Info.plist' in z.namelist()
           shutil.rmtree(payload)
@@ -93,14 +96,14 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: CarIdle-2.3.10-Build45
+          name: CarIdle-2.3.11-Build46
           path: _delivery/*
           if-no-files-found: error
       - name: Publish downloadable files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v2.3.10-build45-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.10 Build 45" --notes "Removed yellow pause controls; finite-width compact trailing countdown; retained lock-screen and expanded layouts. Device validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
+          gh release create "v2.3.11-build46-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.11 Build 46" --notes "Re-register Live Activity extension; recreate existing activities on launch; measured compact countdown; visible extension marker 46. Device validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
