@@ -1,117 +1,110 @@
-name: 编译怠速记录
-
+name: Build CarIdle IPA
 on:
   workflow_dispatch:
   push:
+    branches: [fix/live-activity-v2.3.10]
     paths:
-      - 'app.zip'
-      - '.github/workflows/build.yml'
-
+      - app.zip
+      - scripts/**
+      - .github/workflows/build.yml
+permissions:
+  contents: write
+concurrency:
+  group: caridle-delivery
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 30
-
     steps:
-      - name: 1. 读取仓库
-        uses: actions/checkout@v4
-
-      - name: 2. 检查 app.zip
+      - uses: actions/checkout@v4
+      - name: Extract and repair source
+        shell: bash
         run: |
-          set -e
-          test -f app.zip || {
-            echo "❌ 根目录没有 app.zip"
-            exit 1
-          }
-
-          unzip -tq app.zip >/dev/null
-          echo "✅ app.zip 检查通过"
-
-      - name: 3. 解压源码
+          set -euo pipefail
+          if test -f project.yml; then
+            mkdir -p src
+            rsync -a --exclude=src --exclude=.git --exclude=build --exclude=_delivery ./ src/
+          else
+            unzip -tq app.zip
+            mkdir -p src
+            unzip -q app.zip -d src
+          fi
+          test -f src/CarIdleWidget/IdleWidget.swift
+          if ! grep -q 'MARKETING_VERSION: "2.3.10"' src/project.yml; then
+            PROJECT_DIR=src python3 scripts/apply-live-activity-fix.py
+          fi
+          mkdir -p src/.github/workflows src/scripts _delivery
+          cp .github/workflows/build.yml src/.github/workflows/build.yml
+          cp scripts/apply-live-activity-fix.py src/scripts/
+      - name: Check source and package exact source
         run: |
-          set -e
-
-          rm -rf src
-          mkdir src
-          unzip -q app.zip -d src
-
-          test -f src/project.yml || {
-            echo "❌ app.zip 根目录缺少 project.yml"
-            exit 1
-          }
-
-          echo "✅ 源码解压完成"
-
-      - name: 4. 安装 XcodeGen
-        run: |
-          brew install xcodegen
-
-      - name: 5. 生成 Xcode 工程
+          python3 - <<'PY'
+          from pathlib import Path
+          import plistlib,zipfile,re
+          root=Path('src')
+          for p in root.rglob('*.plist'):plistlib.loads(p.read_bytes())
+          project=(root/'project.yml').read_text()
+          assert project.count('MARKETING_VERSION: "2.3.10"')==2
+          assert project.count('CURRENT_PROJECT_VERSION: "45"')==2
+          text=(root/'CarIdleWidget/IdleWidget.swift').read_text()
+          assert 'pause.fill' not in text and 'pauseButton' not in text
+          compact=text.split('} compactTrailing: {',1)[1].split('} minimal:',1)[0]
+          assert '.infinity' not in compact and '.frame(width:' in compact
+          archive=Path('_delivery/2.3.10-CarIdle-Build45-source.zip')
+          with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
+              for p in sorted(root.rglob('*')):
+                  if p.is_file() and not any(x in p.relative_to(root).parts for x in ('build','.git','Payload')):z.write(p,p.relative_to(root))
+          with zipfile.ZipFile(archive) as z:assert z.testzip() is None
+          PY
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build app and Live Activity extension
         working-directory: src
         run: |
-          set -e
+          set -o pipefail
           xcodegen generate
-
-          test -d CarIdle.xcodeproj || {
-            echo "❌ CarIdle.xcodeproj 生成失败"
-            exit 1
-          }
-
-          echo "✅ Xcode 工程生成成功"
-
-      - name: 6. 编译主 App
-        working-directory: src
+          xcodebuild -project CarIdle.xcodeproj -scheme CarIdle -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tee ../build-output.log
+      - name: Verify bundle versions and package IPA
         run: |
-          set -e
-
-          xcodebuild \
-            -project CarIdle.xcodeproj \
-            -scheme CarIdle \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
-
-      - name: 7. 检查并打包 IPA
-        working-directory: src
+          python3 - <<'PY'
+          from pathlib import Path
+          import plistlib,shutil,subprocess,zipfile,hashlib
+          app=Path('src/build/Build/Products/Release-iphoneos/CarIdle.app')
+          assert app.is_dir()
+          widgets=list((app/'PlugIns').glob('*.appex'));assert len(widgets)==1,widgets
+          for bundle in [app,*widgets]:
+              d=plistlib.loads((bundle/'Info.plist').read_bytes())
+              assert d['CFBundleShortVersionString']=='2.3.10',d
+              assert d['CFBundleVersion']=='45',d
+              assert (bundle/d['CFBundleExecutable']).is_file()
+          payload=Path('_delivery/Payload');payload.mkdir()
+          shutil.copytree(app,payload/'CarIdle.app')
+          dest=Path('_delivery/Payload/CarIdle.app')
+          for appex in (dest/'PlugIns').glob('*.appex'):subprocess.run(['codesign','--force','--sign','-',str(appex)],check=True)
+          subprocess.run(['codesign','--force','--sign','-',str(dest)],check=True)
+          subprocess.run(['zip','-qry','2.3.10-CarIdle-Build45.ipa','Payload'],cwd='_delivery',check=True)
+          with zipfile.ZipFile('_delivery/2.3.10-CarIdle-Build45.ipa') as z:
+              assert z.testzip() is None
+              assert 'Payload/CarIdle.app/PlugIns/CarIdleWidget.appex/Info.plist' in z.namelist()
+          shutil.rmtree(payload)
+          files=sorted(Path('_delivery').iterdir())
+          Path('_delivery/SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in files))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarIdle-2.3.10-Build45
+          path: _delivery/*
+          if-no-files-found: error
+      - name: Publish downloadable files
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -e
-
-          APP="build/Build/Products/Release-iphoneos/CarIdle.app"
-
-          test -d "$APP" || {
-            echo "❌ 没找到 CarIdle.app"
-            exit 1
-          }
-
-          test -f "$APP/Info.plist" || {
-            echo "❌ CarIdle.app 缺少 Info.plist"
-            exit 1
-          }
-
-          echo "✅ CarIdle.app 编译成功"
-
-          rm -rf Payload
-          rm -f CarIdle-V2.0.9.ipa
-
-          mkdir Payload
-          cp -R "$APP" Payload/
-
-          zip -qry CarIdle-V2.0.9.ipa Payload
-
-          test -f CarIdle-V2.0.9.ipa || {
-            echo "❌ IPA 打包失败"
-            exit 1
-          }
-
-          echo "✅ CarIdle-V2.0.9.ipa 打包完成"
-
-      - name: 8. 上传 IPA
+          gh release create "v2.3.10-build45-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.10 Build 45" --notes "Removed yellow pause controls; finite-width compact trailing countdown; retained lock-screen and expanded layouts. Device validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
+      - name: Upload failure logs
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: CarIdle-V2.0.9
-          path: src/CarIdle-V2.0.9.ipa
-          if-no-files-found: error
+          name: CarIdle-Build-Logs
+          path: build-output.log
+          if-no-files-found: warn
