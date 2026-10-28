@@ -31,12 +31,14 @@ jobs:
             unzip -q app.zip -d src
           fi
           test -f src/CarIdleWidget/IdleWidget.swift
-          if ! grep -q 'MARKETING_VERSION: "2.3.12"' src/project.yml; then
-            PROJECT_DIR=src python3 scripts/repair-countdown.py
+          if ! grep -q 'MARKETING_VERSION: "2.3.13"' src/project.yml; then
+            PROJECT_DIR=src python3 scripts/signing48.py
           fi
           mkdir -p src/.github/workflows src/scripts _delivery
           cp .github/workflows/build.yml src/.github/workflows/build.yml
           cp -R scripts/. src/scripts/
+          mkdir -p src/docs
+          cp docs/live-activity-signing-evidence.md src/docs/
       - name: Check source and package exact source
         run: |
           python3 - <<'PY'
@@ -45,8 +47,8 @@ jobs:
           root=Path('src')
           for p in root.rglob('*.plist'):plistlib.loads(p.read_bytes())
           project=(root/'project.yml').read_text()
-          assert project.count('MARKETING_VERSION: "2.3.12"')==2
-          assert project.count('CURRENT_PROJECT_VERSION: "47"')==2
+          assert project.count('MARKETING_VERSION: "2.3.13"')==2
+          assert project.count('CURRENT_PROJECT_VERSION: "48"')==2
           text=(root/'CarIdleWidget/IdleWidget.swift').read_text()
           assert 'pause.fill' not in text and 'pauseButton' not in text
           compact=text.split('} compactTrailing: {',1)[1].split('} minimal:',1)[0]
@@ -56,7 +58,7 @@ jobs:
           assert (root/'Shared/IdleActivityAttributes.swift').is_file()
           assert project.count('      - Shared')==2
           assert 'com.trollbox.caridle.widget' in project
-          archive=Path('_delivery/2.3.12-CarIdle-Build47-source.zip')
+          archive=Path('_delivery/2.3.13-CarIdle-Build48-source.zip')
           with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
               for p in sorted(root.rglob('*')):
                   if p.is_file() and not any(x in p.relative_to(root).parts for x in ('build','.git','Payload')):z.write(p,p.relative_to(root))
@@ -81,8 +83,8 @@ jobs:
           widgets=list((app/'PlugIns').glob('*.appex'));assert len(widgets)==1,widgets
           for bundle in [app,*widgets]:
               d=plistlib.loads((bundle/'Info.plist').read_bytes())
-              assert d['CFBundleShortVersionString']=='2.3.12',d
-              assert d['CFBundleVersion']=='47',d
+              assert d['CFBundleShortVersionString']=='2.3.13',d
+              assert d['CFBundleVersion']=='48',d
               executable=bundle/d['CFBundleExecutable']
               assert executable.is_file()
               assert tuple(map(int,d['MinimumOSVersion'].split('.'))) <= (16,5),d
@@ -96,14 +98,24 @@ jobs:
                   assert 'pause.fill' not in symbols
               verification.append(str(bundle.name)+' '+d['CFBundleIdentifier']+' '+d['CFBundleShortVersionString']+' ('+d['CFBundleVersion']+') MinimumOS='+d['MinimumOSVersion'])
               verification.append(subprocess.check_output(['xcrun','vtool','-show-build',str(executable)],text=True))
-          Path('_delivery/Build47-verification.txt').write_text('\n'.join(verification))
+          Path('_delivery/Build48-verification.txt').write_text('\n'.join(verification))
           payload=Path('_delivery/Payload');payload.mkdir()
           shutil.copytree(app,payload/'CarIdle.app')
           dest=Path('_delivery/Payload/CarIdle.app')
-          for appex in (dest/'PlugIns').glob('*.appex'):subprocess.run(['codesign','--force','--sign','-',str(appex)],check=True)
-          subprocess.run(['codesign','--force','--sign','-',str(dest)],check=True)
-          subprocess.run(['zip','-qry','2.3.12-CarIdle-Build47.ipa','Payload'],cwd='_delivery',check=True)
-          with zipfile.ZipFile('_delivery/2.3.12-CarIdle-Build47.ipa') as z:
+          for bundle in [*(dest/'PlugIns').glob('*.appex'),dest]:
+              name='CarIdle' if bundle == dest else 'CarIdleWidget'
+              entitlements=Path('src/Signing')/(name+'.entitlements')
+              subprocess.run(['codesign','--force','--sign','-','--entitlements',str(entitlements),str(bundle)],check=True)
+              signed=subprocess.check_output(['codesign','-d','--entitlements',':-',str(bundle)],stderr=subprocess.DEVNULL)
+              ent=plistlib.loads(signed)
+              info=plistlib.loads((bundle/'Info.plist').read_bytes())
+              assert ent['application-identifier']=='TROLLTROLL.'+info['CFBundleIdentifier'],ent
+              assert ent['com.apple.developer.team-identifier']=='TROLLTROLL',ent
+              verification.append(name+' signed entitlements: '+str(ent))
+          subprocess.run(['codesign','--verify','--strict','--deep',str(dest)],check=True)
+          Path('_delivery/Build48-verification.txt').write_text('\n'.join(verification))
+          subprocess.run(['zip','-qry','2.3.13-CarIdle-Build48.ipa','Payload'],cwd='_delivery',check=True)
+          with zipfile.ZipFile('_delivery/2.3.13-CarIdle-Build48.ipa') as z:
               assert z.testzip() is None
               assert 'Payload/CarIdle.app/PlugIns/CarIdleWidget.appex/Info.plist' in z.namelist()
           shutil.rmtree(payload)
@@ -112,14 +124,14 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: CarIdle-2.3.12-Build47
+          name: CarIdle-2.3.13-Build48
           path: _delivery/*
           if-no-files-found: error
       - name: Publish downloadable files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v2.3.12-build47-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.12 Build 47" --notes "Restore original extension identity; direct countdown layout; safe activity lifecycle and visible request errors. Device rendering validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
+          gh release create "v2.3.13-build48-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.13 Build 48" --notes "Explicit matching app and extension signing identities; post-sign entitlements and signature verification. Build47 timer layout retained. Device rendering validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
