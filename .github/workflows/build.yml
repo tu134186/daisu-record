@@ -31,13 +31,12 @@ jobs:
             unzip -q app.zip -d src
           fi
           test -f src/CarIdleWidget/IdleWidget.swift
-          if ! grep -q 'MARKETING_VERSION: "2.3.11"' src/project.yml; then
-            PROJECT_DIR=src python3 scripts/apply-live-activity-fix.py
-            PROJECT_DIR=src python3 scripts/refresh-extension.py
+          if ! grep -q 'MARKETING_VERSION: "2.3.12"' src/project.yml; then
+            PROJECT_DIR=src python3 scripts/repair-countdown.py
           fi
           mkdir -p src/.github/workflows src/scripts _delivery
           cp .github/workflows/build.yml src/.github/workflows/build.yml
-          cp scripts/*.py src/scripts/
+          cp -R scripts/. src/scripts/
       - name: Check source and package exact source
         run: |
           python3 - <<'PY'
@@ -46,15 +45,18 @@ jobs:
           root=Path('src')
           for p in root.rglob('*.plist'):plistlib.loads(p.read_bytes())
           project=(root/'project.yml').read_text()
-          assert project.count('MARKETING_VERSION: "2.3.11"')==2
-          assert project.count('CURRENT_PROJECT_VERSION: "46"')==2
+          assert project.count('MARKETING_VERSION: "2.3.12"')==2
+          assert project.count('CURRENT_PROJECT_VERSION: "47"')==2
           text=(root/'CarIdleWidget/IdleWidget.swift').read_text()
           assert 'pause.fill' not in text and 'pauseButton' not in text
           compact=text.split('} compactTrailing: {',1)[1].split('} minimal:',1)[0]
-          assert '.infinity' not in compact and '.overlay(alignment: .trailing)' in compact
-          assert 'com.trollbox.caridle.liveactivity' in project
-          assert '怠速记录 ·46' in text
-          archive=Path('_delivery/2.3.11-CarIdle-Build46-source.zip')
+          assert '.infinity' not in compact and 'CountdownText(' in compact
+          assert '.hidden()' not in text and '.overlay(' not in text
+          assert 'Text(timerInterval:' in text
+          assert (root/'Shared/IdleActivityAttributes.swift').is_file()
+          assert project.count('      - Shared')==2
+          assert 'com.trollbox.caridle.widget' in project
+          archive=Path('_delivery/2.3.12-CarIdle-Build47-source.zip')
           with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
               for p in sorted(root.rglob('*')):
                   if p.is_file() and not any(x in p.relative_to(root).parts for x in ('build','.git','Payload')):z.write(p,p.relative_to(root))
@@ -75,19 +77,33 @@ jobs:
           import plistlib,shutil,subprocess,zipfile,hashlib
           app=Path('src/build/Build/Products/Release-iphoneos/CarIdle.app')
           assert app.is_dir()
+          verification=[]
           widgets=list((app/'PlugIns').glob('*.appex'));assert len(widgets)==1,widgets
           for bundle in [app,*widgets]:
               d=plistlib.loads((bundle/'Info.plist').read_bytes())
-              assert d['CFBundleShortVersionString']=='2.3.11',d
-              assert d['CFBundleVersion']=='46',d
-              assert (bundle/d['CFBundleExecutable']).is_file()
+              assert d['CFBundleShortVersionString']=='2.3.12',d
+              assert d['CFBundleVersion']=='47',d
+              executable=bundle/d['CFBundleExecutable']
+              assert executable.is_file()
+              assert tuple(map(int,d['MinimumOSVersion'].split('.'))) <= (16,5),d
+              if bundle == app:
+                  assert d['CFBundleIdentifier']=='com.trollbox.caridle'
+                  assert d.get('NSSupportsLiveActivities') is True
+              else:
+                  assert d['CFBundleIdentifier']=='com.trollbox.caridle.widget'
+                  assert d['NSExtension']['NSExtensionPointIdentifier']=='com.apple.widgetkit-extension'
+                  symbols=subprocess.check_output(['strings',str(executable)],text=True)
+                  assert 'pause.fill' not in symbols
+              verification.append(str(bundle.name)+' '+d['CFBundleIdentifier']+' '+d['CFBundleShortVersionString']+' ('+d['CFBundleVersion']+') MinimumOS='+d['MinimumOSVersion'])
+              verification.append(subprocess.check_output(['xcrun','vtool','-show-build',str(executable)],text=True))
+          Path('_delivery/Build47-verification.txt').write_text('\n'.join(verification))
           payload=Path('_delivery/Payload');payload.mkdir()
           shutil.copytree(app,payload/'CarIdle.app')
           dest=Path('_delivery/Payload/CarIdle.app')
           for appex in (dest/'PlugIns').glob('*.appex'):subprocess.run(['codesign','--force','--sign','-',str(appex)],check=True)
           subprocess.run(['codesign','--force','--sign','-',str(dest)],check=True)
-          subprocess.run(['zip','-qry','2.3.11-CarIdle-Build46.ipa','Payload'],cwd='_delivery',check=True)
-          with zipfile.ZipFile('_delivery/2.3.11-CarIdle-Build46.ipa') as z:
+          subprocess.run(['zip','-qry','2.3.12-CarIdle-Build47.ipa','Payload'],cwd='_delivery',check=True)
+          with zipfile.ZipFile('_delivery/2.3.12-CarIdle-Build47.ipa') as z:
               assert z.testzip() is None
               assert 'Payload/CarIdle.app/PlugIns/CarIdleWidget.appex/Info.plist' in z.namelist()
           shutil.rmtree(payload)
@@ -96,14 +112,14 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: CarIdle-2.3.11-Build46
+          name: CarIdle-2.3.12-Build47
           path: _delivery/*
           if-no-files-found: error
       - name: Publish downloadable files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v2.3.11-build46-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.11 Build 46" --notes "Re-register Live Activity extension; recreate existing activities on launch; measured compact countdown; visible extension marker 46. Device validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
+          gh release create "v2.3.12-build47-${GITHUB_RUN_ID}" _delivery/* --target "$GITHUB_SHA" --title "CarIdle 2.3.12 Build 47" --notes "Restore original extension identity; direct countdown layout; safe activity lifecycle and visible request errors. Device rendering validation pending. Run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
