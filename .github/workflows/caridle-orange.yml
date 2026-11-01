@@ -1,0 +1,45 @@
+name: CarIdle v2.3.10 orange timer
+on:
+  push:
+    branches: ['codex/v2-3-10-orange-timer']
+  pull_request:
+    branches: ['main']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source and bundled history
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -tq app.zip
+          mkdir src
+          unzip -q app.zip -d src
+          test -f src/CarIdle/history_records.json
+          echo '71a599a38b83635f2f0cc696373e183696da9cc3af222584ce8f7162464ae333  src/CarIdle/history_records.json' | shasum -a 256 -c
+          grep -F 'islandTimerColor' src/CarIdleWidget/IdleWidget.swift
+      - run: brew install xcodegen
+      - name: Build app and widget
+        working-directory: src
+        run: |
+          xcodegen generate
+          xcodebuild -project CarIdle.xcodeproj -scheme CarIdle -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package source and unsigned IPA
+        run: |
+          set -euo pipefail
+          APP=src/build/Build/Products/Release-iphoneos/CarIdle.app
+          test -d "$APP/PlugIns/CarIdleWidget.appex"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry CarIdle-v2.3.10-unsigned.ipa Payload
+          cp app.zip CarIdle-v2.3.10-source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarIdle-v2.3.10
+          path: |
+            CarIdle-v2.3.10-unsigned.ipa
+            CarIdle-v2.3.10-source.zip
+          if-no-files-found: error
